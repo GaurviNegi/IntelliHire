@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+
+.text-neonBlue {
+  color: #0ff; /* Neon Cyan */
+  text-shadow: 0 0 8px rgb(57, 247, 247);
+  font-family: 'Orbitron', sans-serif;
+}
+
+.proctored-test, 
+.proctored-test * {
+  color: black;
+}
+
+
+
