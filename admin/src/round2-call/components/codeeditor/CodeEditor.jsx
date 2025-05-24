@@ -1,4 +1,4 @@
-// /* eslint-disable no-unused-vars */
+/* eslint-disable no-unused-vars */
 // import { useState, useRef, useEffect } from "react";
 // import { Editor } from "@monaco-editor/react";
 // import * as Y from "yjs";
@@ -11,7 +11,7 @@
 // import { useSyncedStore } from "@syncedstore/react";
 // import { store, connect, disconnect } from "../../store";
 
-// const CodeEditor = () => {
+// const CodeEditor = ({ roomId }) => {
 //   const [language, setLanguage] = useState("python");
 //   const [value, setValue] = useState(null);
 
@@ -73,127 +73,85 @@
 
 // export default CodeEditor;
 
-
-
-
-
-
-
-
-
-
-/* eslint-disable no-unused-vars */
-import React, { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Editor } from "@monaco-editor/react";
 import * as Y from "yjs";
 import { WebrtcProvider } from "y-webrtc";
 import { MonacoBinding } from "y-monaco";
-import LanguageSelector from "./LanguageSelector"; // your language dropdown
+import LanguageSelector from "./LanguageSelector";
 import { Box, HStack } from "@chakra-ui/react";
-import Output from "./Output"; // your output component
+import Output from "./Output";
 
 const CodeEditor = ({ roomId }) => {
   const [language, setLanguage] = useState("python");
+  const [value, setValue] = useState(null);
   const editorRef = useRef(null);
-  const providerRef = useRef(null);
+
+  // Keep refs for Yjs shared objects
   const ydocRef = useRef(null);
+  const providerRef = useRef(null);
+  const sharedMapRef = useRef(null);
+
+  useEffect(() => {
+    const doc = new Y.Doc();
+    const provider = new WebrtcProvider(roomId, doc, {
+      signaling: ['wss://dfdd-103-254-207-160.ngrok-free.app'],
+    });
+
+    const sharedMap = doc.getMap("shared");
+
+    ydocRef.current = doc;
+    providerRef.current = provider;
+    sharedMapRef.current = sharedMap;
+
+    // 🔄 Listen for language changes from others
+    sharedMap.observe((event) => {
+      if (event.keysChanged.has("language")) {
+        const newLang = sharedMap.get("language");
+        if (newLang && newLang !== language) {
+          setLanguage(newLang);
+        }
+      }
+    });
+
+    return () => {
+      provider.destroy();
+      doc.destroy();
+    };
+  }, [roomId]);
 
   const handleEditorMounted = (editor, monaco) => {
-    console.log("[Mount] Editor mounted with roomId:", roomId);
     editorRef.current = editor;
 
-    // Create Y.Doc
-    const ydoc = new Y.Doc();
-    ydocRef.current = ydoc;
-    console.log("[Yjs] Y.Doc created");
+    const type = ydocRef.current.getText("monaco");
 
-    // Use public signaling server (you can customize this)
-    const signalingServers = ["wss://signaling.yjs.dev"];
-
-    // Setup WebrtcProvider
-    const provider = new WebrtcProvider(roomId, ydoc, {
-      signaling: signalingServers,
-    });
-    providerRef.current = provider;
-    console.log("[WebRTC] Provider initialized");
-
-    // Listen for provider status
-    provider.on("status", (event) => {
-      console.log("[WebRTC Status]", event.status); // connected / disconnected
-    });
-
-    provider.on("synced", (isSynced) => {
-      console.log("[WebRTC Synced]", isSynced); // true if synced with peers
-    });
-
-    // Awareness update logs
-    provider.awareness.on("update", ({ added, updated, removed }) => {
-      console.log("[Awareness] Added:", added, "Updated:", updated, "Removed:", removed);
-    });
-
-    // Get shared Y.Text type
-    const yText = ydoc.getText("monaco");
-
-    // If editor has no model, create one
-    if (!editor.getModel()) {
-      const model = monaco.editor.createModel("", language);
-      editor.setModel(model);
-      console.log("[Monaco] Model created and set");
-    }
-
-    // Bind Yjs text with Monaco editor model
-    new MonacoBinding(yText, editor.getModel(), new Set([editor]), provider.awareness);
-    console.log("[Binding] MonacoBinding created");
-
-    // Insert initial text if empty to trigger sync
-    if (yText.length === 0) {
-      yText.insert(0, `// Collaborative code editing room: ${roomId}\n`);
-    }
+    new MonacoBinding(
+      type,
+      editor.getModel(),
+      new Set([editor]),
+      providerRef.current.awareness
+    );
   };
 
-  // Language change handler
-  const onSelect = (newLanguage) => {
-    if (editorRef.current) {
-      const oldModel = editorRef.current.getModel();
-      const currentValue = oldModel.getValue();
-
-      oldModel.dispose();
-
-      // Create new model with same content but different language
-      const newModel = window.monaco.editor.createModel(currentValue, newLanguage);
-      editorRef.current.setModel(newModel);
+  const onSelect = (newLang) => {
+    setLanguage(newLang);
+    if (sharedMapRef.current) {
+      sharedMapRef.current.set("language", newLang); // 🟢 Update shared state
     }
-    setLanguage(newLanguage);
   };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (providerRef.current) {
-        console.log("[Cleanup] Destroying WebRTC provider");
-        providerRef.current.destroy();
-      }
-      if (ydocRef.current) {
-        console.log("[Cleanup] Destroying Y.Doc");
-        ydocRef.current.destroy();
-      }
-    };
-  }, []);
 
   return (
     <Box padding={10}>
-      <HStack spacing={4} alignItems="start">
-        <Box w="50%">
+      <HStack spacing={4}>
+        <Box w="70%">
           <LanguageSelector language={language} onSelect={onSelect} />
           <Editor
             height="75vh"
             theme="vs-dark"
             language={language}
             onMount={handleEditorMounted}
-            options={{
-              fontSize: 14,
-              automaticLayout: true,
-            }}
+            value={value}
+            onChange={(val) => setValue(val)}
           />
         </Box>
         <Output editorRef={editorRef} language={language} />
@@ -203,3 +161,16 @@ const CodeEditor = ({ roomId }) => {
 };
 
 export default CodeEditor;
+
+
+
+
+
+
+
+
+
+
+
+ 
+
