@@ -1,181 +1,272 @@
-import { useEffect, useState, useContext } from "react";
+import { useEffect, useState, useContext, useRef } from "react";
 import axios from "axios";
 import MCQPage from "./MCQPage";
 import CodingPage from "./CodingPage";
 import { TimerContext } from "../context/TimerContext";
 import { useNavigate } from "react-router-dom";
+import * as faceapi from 'face-api.js';
 
 const TestScreen = () => {
+  // Existing states
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
-  const { timeLeft } = useContext(TimerContext);
-  //for mcq
+  const { timeLeft, resetTimer } = useContext(TimerContext);
   const [answers, setAnswers] = useState([]);
-// ✅ for coding state persistency
-const [codingAnswers, setCodingAnswers] = useState([]);
-
+  const [codingAnswers, setCodingAnswers] = useState([]);
   const [warningCount, setWarningCount] = useState(0);
-  const { resetTimer } = useContext(TimerContext);
   const navigate = useNavigate();
 
-  //! HANDLE SUBMIT TEST with TAB VIOLATION **********************************
-  const handleSubmitTest = async (violation= false ) => {
+  // Face detection states with draggable functionality
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const videoContainerRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [position, setPosition] = useState({ x: 20, y: 20 });
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [proctoringStatus, setProctoringStatus] = useState({
+    status: 'initializing',
+    message: 'Initializing proctoring...'
+  });
+  const [violations, setViolations] = useState({
+    face: 0,
+    tab: 0,
+    fullscreen: 0
+  });
+  const detectionTimeout = useRef(null);
+  const noFaceTime = useRef(0);
+  const [lastWarning, setLastWarning] = useState(null);
+
+  //! ======================== DRAGGABLE VIDEO FUNCTIONS ========================
+
+  const handleMouseDown = (e) => {
+    if (e.button !== 0) return; // Only left mouse button
+    
+    const rect = videoContainerRef.current.getBoundingClientRect();
+    setDragOffset({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
+    setIsDragging(true);
+    e.preventDefault();
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    
+    setPosition({
+      x: e.clientX - dragOffset.x,
+      y: e.clientY - dragOffset.y
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  useEffect(() => {
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isDragging, dragOffset]);
+
+  //! ======================== CORE FUNCTIONS ========================
+
+  const handleSubmitTest = async (violationData = {}) => {
     try {
+      stopProctoring();
+      
       await axios.post(
         "http://localhost:5000/api/test/submit-test",
-        { answers, violation},
+        { 
+          answers, 
+          codingAnswers,
+          violations,
+          ...violationData
+        },
         { withCredentials: true }
       );
 
-      alert("🥳 Test submitted successfully! AND You Will Be Logged Out");
-      // Clear all localStorage
-      localStorage.clear();
-      resetTimer(); // Reset timer after test submission
-      setTimeout(() => navigate("/"), 500); // navigate to home after submitting the test
+      alert("Test submitted successfully!");
+      resetTimer();
+      setTimeout(() => navigate("/"), 500);
     } catch (error) {
       console.error("Error submitting test:", error);
       alert("Failed to submit test. Try again.");
     }
   };
 
-  //! use effect for the fetching question
-  useEffect(() => {
-    axios
-      .get("http://localhost:5000/api/questions/")
-      .then((res) => {
-        setQuestions(res.data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
+  //! ======================== PROCTORING FUNCTIONS ========================
 
-
-//!full screen mode 
-  useEffect(() => {
-    const enterFullscreen = () => {
-      const elem = document.documentElement;
-      if (elem.requestFullscreen) {
-        elem.requestFullscreen();
-      } else if (elem.mozRequestFullScreen) {
-        elem.mozRequestFullScreen();
-      } else if (elem.webkitRequestFullscreen) {
-        elem.webkitRequestFullscreen();
-      } else if (elem.msRequestFullscreen) {
-        elem.msRequestFullscreen();
-      }
-    };
-  
-    enterFullscreen(); // Enter fullscreen when the page loads
-  
-    let exitCount = 0;
-  
-    const handleFullscreenChange = async () => {
-      if (!document.fullscreenElement) {
-        // Ask for confirmation before exiting fullscreen
-        const confirmExit = window.confirm(
-          "Are you sure you want to exit fullscreen mode?"
-        );
-  
-        if (!confirmExit) {
-          enterFullscreen(); // Re-enter fullscreen if user cancels exit
-          return;
-        }
-  
-        // If user confirms exit, increment the count
-        exitCount += 1;
-  
-        if (exitCount >= 3) {
-          alert("You have exited fullscreen too many times. Submitting the test.");
-          handleSubmitTest(true); // Auto-submit test
-        }
-      }
-    };
-  
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-  
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-    };
-  }, []);
-  
-  
-
-
-
-  //! Tab Switch Detection( increase warning count if tab switch found )
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        setWarningCount((prev) => prev + 1);
-        alert(`Warning ${warningCount + 1}: Do not switch tabs!`);
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [warningCount]);
-
-
-  //! Auto-submit test if warnings exceed 3
-  useEffect(() => {
-    if (warningCount >= 100) {
-      alert("Multiple instances of suspicious activity have been recorded. You have surpassed the allowed threshold. Your exam session is now terminated due to confirmed malpractice");
-
-      setTimeout(() => {
-        handleSubmitTest(true);
-      }, 100);
+  const initializeProctoring = async () => {
+    try {
+      updateProctoringStatus('initializing', 'Loading face detection models...');
+      
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
+        faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+        faceapi.nets.faceRecognitionNet.loadFromUri('/models')
+      ]);
+      
+      updateProctoringStatus('initializing', 'Requesting camera access...');
+      await startVideoStream();
+      
+    } catch (error) {
+      console.error("Proctoring initialization error:", error);
+      updateProctoringStatus('error', 
+        error.message.includes('camera') ? 
+        'Camera access denied. Test will continue with limited proctoring.' :
+        'Face detection unavailable. Test will continue with limited monitoring.'
+      );
     }
-  }, [warningCount]);
-
-
-  //! Auto-submit if time == 00
-  useEffect(() => {
-    if (timeLeft === 0) {
-      setTimeout(() => {
-        handleSubmitTest(true);
-      }, 100);
-    }
-  }, [timeLeft]);
-
-
-  //! Disable Back and Forward Navigation
-  useEffect(() => {
-    const preventNavigation = () => {
-      window.history.pushState(null, null, window.location.href);
-    };
-
-    preventNavigation(); // Push initial state
-
-    window.addEventListener("popstate", preventNavigation);
-
-    return () => {
-      window.removeEventListener("popstate", preventNavigation);
-    };
-  }, []);
-
-  
-  //! Formatting Timer
-  const formatTime = (seconds) => {
-    const min = Math.floor(seconds / 60);
-    const sec = seconds % 60;
-    return `${min}:${sec < 10 ? "0" : ""}${sec}`;
   };
 
-  if (loading) return <p>Loading...</p>;
-  if (questions.length === 0) return <p>No questions found</p>;
+  const startVideoStream = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: 320, 
+          height: 240,
+          facingMode: "user" 
+        } 
+      });
+      
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = () => {
+        setupFaceDetection();
+        updateProctoringStatus('active', 'Proctoring active');
+      };
+      
+    } catch (error) {
+      throw new Error('Camera access error: ' + error.message);
+    }
+  };
 
-  const question = questions[currentIndex];
+  const setupFaceDetection = () => {
+    stopFaceDetection();
+    
+    const canvas = canvasRef.current;
+    const displaySize = { 
+      width: videoRef.current.videoWidth,
+      height: videoRef.current.videoHeight 
+    };
+    faceapi.matchDimensions(canvas, displaySize);
 
-  //! HANDLING QUESTION NAVIGATION
+    let detectionDelay = 2000;
+    const maxDetectionDelay = 10000;
+    
+    const detect = async () => {
+      try {
+        const startTime = Date.now();
+        
+        const detections = await faceapi.detectAllFaces(
+          videoRef.current, 
+          new faceapi.TinyFaceDetectorOptions()
+        ).withFaceLandmarks();
+
+        const processingTime = Date.now() - startTime;
+        detectionDelay = Math.min(
+          Math.max(2000, processingTime * 2),
+          maxDetectionDelay
+        );
+
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (detections.length > 0) {
+          const resizedDetections = faceapi.resizeResults(detections, displaySize);
+          faceapi.draw.drawDetections(canvas, resizedDetections);
+          faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+        }
+
+        evaluateDetectionResults(detections.length);
+        
+      } catch (error) {
+        console.error("Detection error:", error);
+        detectionDelay = Math.min(detectionDelay * 2, maxDetectionDelay);
+      } finally {
+        detectionTimeout.current = setTimeout(detect, detectionDelay);
+      }
+    };
+
+    detectionTimeout.current = setTimeout(detect, detectionDelay);
+  };
+
+  const evaluateDetectionResults = (faceCount) => {
+    const now = Date.now();
+    
+    if (faceCount === 0) {
+      if (noFaceTime.current === 0) {
+        noFaceTime.current = now;
+      }
+      
+      const elapsed = (now - noFaceTime.current) / 1000;
+      
+      if (elapsed >= 10) {
+        recordViolation('face', 'No face detected for 10 seconds');
+      } else if (elapsed >= 5) {
+        showWarning('Please position your face in the camera');
+      }
+    } 
+    else if (faceCount > 1) {
+      recordViolation('face', 'Multiple faces detected');
+    } 
+    else {
+      noFaceTime.current = 0;
+    }
+  };
+
+  const recordViolation = (type, message) => {
+    setViolations(prev => ({
+      ...prev,
+      [type]: prev[type] + 1
+    }));
+    
+    showWarning(message, true);
+    
+    const totalViolations = Object.values(violations).reduce((a, b) => a + b, 0);
+    if (totalViolations >= 3) {
+      handleSubmitTest({ violation: true, violationType: 'exceeded_threshold' });
+    }
+  };
+
+  const showWarning = (message, isViolation = false) => {
+    setLastWarning({ message, timestamp: Date.now(), isViolation });
+    setTimeout(() => setLastWarning(null), 5000);
+    
+    if (isViolation) {
+      updateProctoringStatus('warning', message);
+    }
+  };
+
+  const updateProctoringStatus = (status, message) => {
+    setProctoringStatus({ status, message });
+  };
+
+  const stopProctoring = () => {
+    stopFaceDetection();
+    if (videoRef.current?.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  const stopFaceDetection = () => {
+    if (detectionTimeout.current) {
+      clearTimeout(detectionTimeout.current);
+    }
+  };
+
+  //! ======================== TEST FUNCTIONS ========================
+
   const handleQuestionClick = (index) => {
     setCurrentIndex(index);
   };
 
-  //! HANDLING PREV & NEXT BUTTON
   const handleNext = () => {
     if (currentIndex < questions.length - 1) {
       setCurrentIndex((prev) => prev + 1);
@@ -191,49 +282,181 @@ const [codingAnswers, setCodingAnswers] = useState([]);
   const handleOptionSelect = (questionId, selectedOption, isCorrect) => {
     setAnswers((prevAnswers) => {
       const existingAnswerIndex = prevAnswers.findIndex(
-        (ans) => ans.questionId === questionId  // Use _id here
+        (ans) => ans.questionId === questionId
       );
-  
+      const updatedAnswers = [...prevAnswers];
+
       if (existingAnswerIndex !== -1) {
-        // Update existing answer
-        return prevAnswers.map((ans) =>
-          ans.questionId === questionId
-            ? { questionId, selectedOption, isCorrect }
-            : ans
-        );
+        updatedAnswers[existingAnswerIndex] = {
+          questionId,
+          selectedOption,
+          isCorrect,
+        };
       } else {
-        // Add new answer
-        return [...prevAnswers, { questionId, selectedOption, isCorrect }];
+        updatedAnswers.push({ questionId, selectedOption, isCorrect });
       }
+
+      return updatedAnswers;
     });
   };
-  
 
-const handleCodeChange = (code, questionId) => {
-  setCodingAnswers((prevAnswers) => {
-    const updatedAnswers = [...prevAnswers];
-    const index = updatedAnswers.findIndex((ans) => ans.questionId === questionId);
+  const handleCodeChange = (code, questionId) => {
+    setCodingAnswers((prevAnswers) => {
+      const updatedAnswers = [...prevAnswers];
+      const index = updatedAnswers.findIndex((ans) => ans.questionId === questionId);
 
-    if (index !== -1) {
-      updatedAnswers[index].code = code;
-    } else {
-      updatedAnswers.push({ questionId, code });
+      if (index !== -1) {
+        updatedAnswers[index].code = code;
+      } else {
+        updatedAnswers.push({ questionId, code });
+      }
+
+      localStorage.setItem(`code-${questionId}`, code);
+      return updatedAnswers;
+    });
+  };
+
+  const formatTime = (seconds) => {
+    const min = Math.floor(seconds / 60);
+    const sec = seconds % 60;
+    return `${min}:${sec < 10 ? "0" : ""}${sec}`;
+  };
+
+  //! ======================== EFFECT HOOKS ========================
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const questionsResponse = await axios.get("http://localhost:5000/api/questions/");
+        setQuestions(questionsResponse.data);
+        await initializeProctoring();
+      } catch (error) {
+        console.error("Initialization error:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+
+    return () => {
+      stopProctoring();
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) {
+        recordViolation('fullscreen', 'Fullscreen exited');
+        const elem = document.documentElement;
+        if (elem.requestFullscreen) elem.requestFullscreen().catch(() => {});
+      }
+    };
+
+    const enterFullscreen = () => {
+      const elem = document.documentElement;
+      if (!document.fullscreenElement) {
+        elem.requestFullscreen().catch(err => {
+          console.error("Fullscreen error:", err);
+        });
+      }
+    };
+
+    enterFullscreen();
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        recordViolation('tab', 'Tab switched or minimized');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      handleSubmitTest({ timeExpired: true });
     }
+  }, [timeLeft]);
 
-    // Update localStorage as well here (optional if you want to)
-    localStorage.setItem(`code-${questionId}`, code);
+  //! ======================== RENDER ========================
 
-    return updatedAnswers;
-  });
-};
+  if (loading) return <div className="flex justify-center items-center h-screen">Loading...</div>;
+  if (questions.length === 0) return <div className="flex justify-center items-center h-screen">No questions found</div>;
 
-
- 
+  const question = questions[currentIndex];
 
   return (
-    <div className="flex">
-      {/* ✅ Sidebar for question navigation */}
-      <div className="w-1/5 p-4 bg-gray-100 min-h-screen">
+    <div className="flex relative">
+      {/* Movable Proctoring Panel */}
+      <div
+        ref={videoContainerRef}
+        className={`fixed z-50 bg-white p-2 rounded-lg shadow-lg border-2 ${
+          proctoringStatus.status === 'active' ? 'border-green-500' :
+          proctoringStatus.status === 'warning' ? 'border-yellow-500' :
+          'border-red-500'
+        } ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+        style={{
+          left: `${position.x}px`,
+          top: `${position.y}px`,
+          width: "340px"
+        }}
+        onMouseDown={handleMouseDown}
+      >
+        <div className="flex justify-between items-center mb-1">
+          <span className="text-sm font-medium">
+            {proctoringStatus.status === 'active' ? '✅ Proctoring Active' :
+             proctoringStatus.status === 'warning' ? '⚠️ Proctoring Warning' :
+             '❌ Proctoring Issue'}
+          </span>
+          <span className="text-xs bg-gray-200 px-2 py-1 rounded">
+            Violations: {violations.face + violations.tab + violations.fullscreen}
+          </span>
+        </div>
+        
+        <div className="relative">
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            width="320"
+            height="240"
+            className="rounded"
+          />
+          <canvas
+            ref={canvasRef}
+            width="320"
+            height="240"
+            className="absolute top-0 left-0 pointer-events-none"
+          />
+        </div>
+        <div className="text-xs mt-1 text-gray-600">
+          {proctoringStatus.message}
+        </div>
+      </div>
+
+      {/* Warning notification */}
+      {lastWarning && (
+        <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 p-4 rounded-lg shadow-lg ${
+          lastWarning.isViolation ? 'bg-red-500 text-white' : 'bg-yellow-500 text-black'
+        }`}>
+          {lastWarning.message}
+        </div>
+      )}
+
+      {/* Sidebar for question navigation */}
+      <div className="w-1/5 p-4 bg-gray-100 min-h-screen sticky top-0">
         <h2 className="text-lg font-semibold mb-3">Questions</h2>
         <div className="space-y-2">
           {questions.map((q, index) => (
@@ -248,53 +471,72 @@ const handleCodeChange = (code, questionId) => {
             </button>
           ))}
         </div>
-      </div>  
-
-      {/*  Main Content */}
-      <div className="w-4/5 p-5">
-        {/*  Header Row with Test Title, Timer & Submit Button */}
-        <div className="flex justify-between items-center mb-5">
-          <h1 className="text-2xl font-bold">Test</h1>
-          <div className="text-lg font-semibold bg-gray-100 p-2 rounded">
-            ⏳ Time Left: {formatTime(timeLeft)}
+        
+        <div className="mt-6 p-3 bg-white rounded-lg shadow">
+          <h3 className="font-medium mb-2">Proctoring Summary</h3>
+          <div className="space-y-1 text-sm">
+            <div>Tab Changes: {violations.tab}</div>
+            <div>Face Violations: {violations.face}</div>
+            <div>Fullscreen Exits: {violations.fullscreen}</div>
           </div>
-          <button
-            className="px-4 py-2 bg-red-500 text-white rounded"
-            onClick={() => handleSubmitTest()}
-          >
-            Submit Test
-          </button>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="w-4/5 p-5">
+        <div className="flex justify-between items-center mb-5">
+          <h1 className="text-2xl font-bold">Online Proctored Test</h1>
+          
+          <div className="flex items-center space-x-4">
+            <div className="text-lg font-semibold bg-gray-100 p-2 rounded">
+              ⏳ Time Left: {formatTime(timeLeft)}
+            </div>
+            
+            <button
+              className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition"
+              onClick={() => handleSubmitTest()}
+            >
+              Submit Test
+            </button>
+          </div>
         </div>
 
-        <div className="w-[100%] p-5 border rounded-lg shadow-lg">
-          <p className="text-right text-sm text-gray-500">
+        <div className="w-[100%] p-5 border rounded-lg shadow-lg bg-white">
+          <p className="text-right text-sm text-gray-500 mb-4">
             Question {currentIndex + 1} of {questions.length}
           </p>
 
-          {/* ✅ Show MCQPage for MCQ Questions */}
           {question.type === "MCQ" ? (
-            <MCQPage
-            question={question}
-            handleOptionSelect={handleOptionSelect}
-            selectedOption={  // This is where the selectedOption is passed
-              answers.find((ans) => ans.questionId === question._id)?.selectedOption || ""
-            }
-          />
+            <MCQPage 
+              question={question} 
+              handleOptionSelect={handleOptionSelect} 
+              selectedOption={
+                answers.find(ans => ans.questionId === question._id)?.selectedOption
+              }
+            />
           ) : (
-            <CodingPage
-    question={question}
-    savedCode={
-      codingAnswers.find((ans) => ans.questionId === question._id)?.code || ""
-    }
-    onCodeChange={handleCodeChange}
-  />
+            <CodingPage 
+              question={question}
+              savedCode={
+                codingAnswers.find(ans => ans.questionId === question._id)?.code || ""
+              }
+              onCodeChange={handleCodeChange}
+            />
           )}
 
-          <div className="mt-4 flex justify-between">
-            <button className="px-4 py-2 bg-gray-300 rounded" onClick={handlePrev} disabled={currentIndex === 0}>
+          <div className="mt-6 flex justify-between">
+            <button 
+              className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400 transition disabled:opacity-50"
+              onClick={handlePrev} 
+              disabled={currentIndex === 0}
+            >
               Previous
             </button>
-            <button className="px-4 py-2 bg-blue-500 text-white rounded" onClick={handleNext} disabled={currentIndex === questions.length - 1}>
+            <button 
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition disabled:opacity-50"
+              onClick={handleNext} 
+              disabled={currentIndex === questions.length - 1}
+            >
               Next
             </button>
           </div>
